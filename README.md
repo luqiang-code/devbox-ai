@@ -36,7 +36,7 @@ java -jar target/devbox-ai-0.1.0.jar --repo https://github.com/user/repo --provi
 
 | Provider | API Key Env | Default Model | Notes |
 |----------|-------------|---------------|-------|
-| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-chat` | GPT-compatible, cheaper |
+| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-v4-pro` / `deepseek-v4-flash` | GPT-compatible, cheaper |
 | Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` | More accurate analysis |
 
 Auto-detection: DeepSeek preferred if both keys are set. Falls back to local detection if no key available (reads dependency files directly).
