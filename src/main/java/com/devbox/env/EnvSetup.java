@@ -1,39 +1,31 @@
 package com.devbox.env;
 
+import com.devbox.ai.AiProvider;
 import com.devbox.model.ProjectInfo;
-import com.google.gson.*;
+import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
-import java.io.*;
+import java.io.IOException;
 import java.lang.reflect.Type;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
 public class EnvSetup {
-    private static final String API_URL = "https://api.anthropic.com/v1/messages";
-    private static final String MODEL = "claude-sonnet-4-6-20250514";
-
-    private final String apiKey;
+    private final AiProvider ai;
     private final String workDir;
-    private final HttpClient httpClient;
     private final Gson gson;
 
-    public EnvSetup(String apiKey, String workDir) {
-        this.apiKey = apiKey;
+    public EnvSetup(AiProvider ai, String workDir) {
+        this.ai = ai;
         this.workDir = workDir;
-        this.httpClient = HttpClient.newHttpClient();
         this.gson = new Gson();
     }
 
     public void provision(ProjectInfo project) throws Exception {
         Path repoPath = Paths.get(workDir, project.getName());
 
-        System.out.println("⚙ Setting up environment for " + project.getName());
+        System.out.println(" Setting up environment for " + project.getName());
         System.out.println("  Stack: " + project.getStack());
         System.out.println("  Runtime: " + project.getRuntime());
 
@@ -50,11 +42,11 @@ public class EnvSetup {
                 boolean ok = p.waitFor(120, TimeUnit.SECONDS);
                 if (!ok || p.exitValue() != 0) {
                     String output = new String(p.getInputStream().readAllBytes());
-                    System.out.println("  ⚠ Command may have issues: " + output.substring(0, Math.min(200, output.length())));
+                    System.out.println("  Command output: " + output.substring(0, Math.min(200, output.length())));
                 }
             } catch (Exception e) {
                 String suggestion = suggestFix(project, step, e.getMessage());
-                System.out.println("  💡 Suggestion: " + suggestion);
+                System.out.println("  Suggestion: " + suggestion);
             }
         }
 
@@ -62,7 +54,7 @@ public class EnvSetup {
             writeEnvTemplate(repoPath, project.getEnvVars());
         }
 
-        System.out.println("✓ Environment ready.");
+        System.out.println(" Environment ready.");
     }
 
     private Map<String, Boolean> checkAvailableTools() {
@@ -94,8 +86,7 @@ public class EnvSetup {
                 available, project.getStack(), project.getRuntime(), project.getDependencies()
         );
 
-        String response = callAnthropic(prompt);
-        // Parse JSON array
+        String response = ai.chat(null, prompt, 1024);
         String json = response.trim();
         if (json.startsWith("```")) {
             json = json.replaceAll("```json?|```", "").trim();
@@ -114,7 +105,7 @@ public class EnvSetup {
                 "Setup step failed: %s\nError: %s\nProject: %s\nSuggest a fix in one sentence.",
                 step.description, error, project.getStack()
         );
-        return callAnthropicShort(prompt);
+        return ai.chat(null, prompt, 256);
     }
 
     private void writeEnvTemplate(Path repoPath, List<String> envVars) throws IOException {
@@ -126,48 +117,6 @@ public class EnvSetup {
         }
         Files.writeString(envPath, sb.toString());
         System.out.println("  Created .env with " + envVars.size() + " variables to configure");
-    }
-
-    private String callAnthropic(String prompt) throws Exception {
-        JsonObject body = new JsonObject();
-        body.addProperty("model", MODEL);
-        body.addProperty("max_tokens", 1024);
-        body.add("messages", gson.toJsonTree(List.of(
-                Map.of("role", "user", "content", prompt)
-        )));
-
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(API_URL))
-                .header("x-api-key", apiKey)
-                .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(body)))
-                .build();
-
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-        JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
-        return json.getAsJsonArray("content").get(0).getAsJsonObject().get("text").getAsString();
-    }
-
-    private String callAnthropicShort(String prompt) throws Exception {
-        JsonObject body = new JsonObject();
-        body.addProperty("model", MODEL);
-        body.addProperty("max_tokens", 256);
-        body.add("messages", gson.toJsonTree(List.of(
-                Map.of("role", "user", "content", prompt)
-        )));
-
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(API_URL))
-                .header("x-api-key", apiKey)
-                .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(body)))
-                .build();
-
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-        JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
-        return json.getAsJsonArray("content").get(0).getAsJsonObject().get("text").getAsString();
     }
 
     static class Step {

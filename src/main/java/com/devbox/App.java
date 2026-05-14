@@ -1,5 +1,8 @@
 package com.devbox;
 
+import com.devbox.ai.AiProvider;
+import com.devbox.ai.AnthropicProvider;
+import com.devbox.ai.DeepSeekProvider;
 import com.devbox.analyzer.LocalRepoAnalyzer;
 import com.devbox.analyzer.RepoAnalyzer;
 import com.devbox.deploy.Deployer;
@@ -12,6 +15,7 @@ import picocli.CommandLine.Option;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.Callable;
 
@@ -32,8 +36,11 @@ public class App implements Callable<Integer> {
     @Option(names = {"--dry-run"}, description = "Analyze only, skip setup and deploy")
     private boolean dryRun;
 
-    @Option(names = {"--local"}, description = "Use local file-based detection (no AI, no API key needed)")
+    @Option(names = {"--local"}, description = "Use local file-based detection (no AI)")
     private boolean localMode;
+
+    @Option(names = {"--provider"}, defaultValue = "auto", description = "AI provider: auto, deepseek, anthropic")
+    private String providerChoice;
 
     public static void main(String[] args) {
         int exitCode = new CommandLine(new App()).execute(args);
@@ -42,24 +49,31 @@ public class App implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
-        String apiKey = loadApiKey();
-        boolean useAI = !localMode && apiKey != null;
+        Properties env = loadEnv();
 
-        if (!useAI && !localMode && apiKey == null) {
-            System.out.println("💡 No ANTHROPIC_API_KEY found — using local detection mode.");
-            System.out.println("   Set ANTHROPIC_API_KEY env var for AI-powered analysis.");
-            System.out.println("   Or use --local to suppress this message.");
-            System.out.println();
+        AiProvider ai = null;
+        if (!localMode) {
+            ai = resolveProvider(env);
         }
 
-        System.out.println("🔍 Analyzing: " + repo);
-        System.out.println("   Mode: " + (useAI ? "AI-powered (Claude)" : "Local file-based detection"));
+        boolean useAI = ai != null;
+
+        if (!useAI) {
+            if (!localMode) {
+                System.out.println(" No API key found (set DEEPSEEK_API_KEY or ANTHROPIC_API_KEY).");
+                System.out.println("   Using local file-based detection.");
+                System.out.println();
+            }
+        }
+
+        System.out.println(" Analyzing: " + repo);
+        System.out.println("   Mode: " + (useAI ? "AI-powered (" + ai.providerName() + ")" : "Local file-based detection"));
         System.out.println();
 
         ProjectInfo project;
 
         if (useAI) {
-            RepoAnalyzer analyzer = new RepoAnalyzer(apiKey, workDir);
+            RepoAnalyzer analyzer = new RepoAnalyzer(ai, workDir);
             project = analyzer.analyze(repo);
         } else {
             LocalRepoAnalyzer analyzer = new LocalRepoAnalyzer(workDir);
@@ -69,53 +83,93 @@ public class App implements Callable<Integer> {
         printAnalysis(project);
 
         if (dryRun) {
-            System.out.println("✓ Dry run complete. No changes made.");
+            System.out.println(" Dry run complete. No changes made.");
             return 0;
         }
 
-        EnvSetup env = new EnvSetup(apiKey, workDir);
-        env.provision(project);
+        if (useAI) {
+            EnvSetup envSetup = new EnvSetup(ai, workDir);
+            envSetup.provision(project);
 
-        Deployer deployer = new Deployer(apiKey, workDir);
-        deployer.deploy(project);
+            Deployer deployer = new Deployer(ai, workDir);
+            deployer.deploy(project);
+        } else {
+            System.out.println(" Setup/Deploy requires AI provider for optimal results.");
+            System.out.println(" Run: cd .devbox/" + project.getName() + " && " + project.getRunCommand());
+        }
 
-        System.out.println("✓ Done! Project should be running at: " + project.getLocalUrl());
+        System.out.println(" Done! Project at: " + project.getLocalUrl());
         return 0;
     }
 
+    private AiProvider resolveProvider(Properties env) {
+        // Explicit choice
+        if ("deepseek".equalsIgnoreCase(providerChoice)) {
+            String key = env.getProperty("DEEPSEEK_API_KEY");
+            if (key != null && !key.isEmpty()) {
+                return new DeepSeekProvider(key);
+            }
+            System.err.println("Error: --provider deepseek but DEEPSEEK_API_KEY not set");
+            return null;
+        }
+        if ("anthropic".equalsIgnoreCase(providerChoice)) {
+            String key = env.getProperty("ANTHROPIC_API_KEY");
+            if (key != null && !key.isEmpty()) {
+                return new AnthropicProvider(key);
+            }
+            System.err.println("Error: --provider anthropic but ANTHROPIC_API_KEY not set");
+            return null;
+        }
+
+        // Auto-detect: prefer DeepSeek
+        String dsKey = env.getProperty("DEEPSEEK_API_KEY");
+        if (dsKey != null && !dsKey.isEmpty()) {
+            return new DeepSeekProvider(dsKey);
+        }
+        String antKey = env.getProperty("ANTHROPIC_API_KEY");
+        if (antKey != null && !antKey.isEmpty()) {
+            return new AnthropicProvider(antKey);
+        }
+        return null;
+    }
+
     private void printAnalysis(ProjectInfo project) {
-        System.out.println("┌─────────────────────────────────────────────");
-        System.out.println("│ Project:  " + project.getName());
-        System.out.println("│ Stack:    " + project.getStack());
-        System.out.println("│ Runtime:  " + project.getRuntime());
-        System.out.println("│ URL:      " + project.getLocalUrl());
+        System.out.println("+---------------------------------------------");
+        System.out.println("| Project:  " + project.getName());
+        System.out.println("| Stack:    " + project.getStack());
+        System.out.println("| Runtime:  " + project.getRuntime());
+        System.out.println("| URL:      " + project.getLocalUrl());
         if (!project.getDescription().isEmpty()) {
-            System.out.println("│ About:    " + project.getDescription());
+            System.out.println("| About:    " + project.getDescription());
         }
         if (!project.getDependencies().isEmpty()) {
-            System.out.println("│ Deps:     " + String.join(", ", project.getDependencies()));
+            System.out.println("| Deps:     " + String.join(", ", project.getDependencies()));
         }
         if (!project.getEnvVars().isEmpty()) {
-            System.out.println("│ Env vars: " + String.join(", ", project.getEnvVars()));
+            System.out.println("| Env vars: " + String.join(", ", project.getEnvVars()));
         }
-        System.out.println("│ Setup:    " + String.join(" && ", project.getSetupCommands()));
-        System.out.println("│ Run:      " + project.getRunCommand());
-        System.out.println("└─────────────────────────────────────────────");
+        System.out.println("| Setup:    " + String.join(" && ", project.getSetupCommands()));
+        System.out.println("| Run:      " + project.getRunCommand());
+        System.out.println("+---------------------------------------------");
         System.out.println();
     }
 
-    private String loadApiKey() {
-        String key = System.getenv("ANTHROPIC_API_KEY");
-        if (key != null && !key.isEmpty()) return key;
-
+    private Properties loadEnv() {
+        Properties props = new Properties();
+        // Load from .env file first
         Path envFile = Path.of(".env");
         if (Files.exists(envFile)) {
             try {
-                Properties props = new Properties();
                 props.load(Files.newInputStream(envFile));
-                return props.getProperty("ANTHROPIC_API_KEY");
             } catch (IOException ignored) {}
         }
-        return null;
+        // Env vars override .env
+        for (String key : List.of("DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY")) {
+            String val = System.getenv(key);
+            if (val != null && !val.isEmpty()) {
+                props.setProperty(key, val);
+            }
+        }
+        return props;
     }
 }

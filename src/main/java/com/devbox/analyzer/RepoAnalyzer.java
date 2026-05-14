@@ -1,34 +1,21 @@
 package com.devbox.analyzer;
 
+import com.devbox.ai.AiProvider;
 import com.devbox.model.ProjectInfo;
-import com.google.gson.Gson;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import org.yaml.snakeyaml.Yaml;
 
-import java.io.*;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
 import java.util.stream.Collectors;
 
 public class RepoAnalyzer {
-    private static final String API_URL = "https://api.anthropic.com/v1/messages";
-    private static final String MODEL = "claude-sonnet-4-6-20250514";
-
-    private final String apiKey;
+    private final AiProvider ai;
     private final String workDir;
-    private final HttpClient httpClient;
-    private final Gson gson;
 
-    public RepoAnalyzer(String apiKey, String workDir) {
-        this.apiKey = apiKey;
+    public RepoAnalyzer(AiProvider ai, String workDir) {
+        this.ai = ai;
         this.workDir = workDir;
-        this.httpClient = HttpClient.newHttpClient();
-        this.gson = new Gson();
     }
 
     public ProjectInfo analyze(String repoUrl) throws Exception {
@@ -46,7 +33,7 @@ public class RepoAnalyzer {
         Map<String, String> configs = collectConfigFiles(repoPath);
 
         String prompt = buildAnalysisPrompt(repoName, readme, deps, configs);
-        String response = callAnthropic(prompt);
+        String response = ai.chat(null, prompt, 1024);
 
         return parseResponse(response);
     }
@@ -147,34 +134,6 @@ public class RepoAnalyzer {
                 yaml.dump(configs.entrySet().stream()
                         .collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().substring(0, Math.min(500, e.getValue().length())))))
         );
-    }
-
-    private String callAnthropic(String prompt) throws Exception {
-        JsonObject body = new JsonObject();
-        body.addProperty("model", MODEL);
-        body.addProperty("max_tokens", 1024);
-        body.add("messages", gson.toJsonTree(List.of(
-                Map.of("role", "user", "content", prompt)
-        )));
-
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(API_URL))
-                .header("x-api-key", apiKey)
-                .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(body)))
-                .build();
-
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-        if (response.statusCode() != 200) {
-            throw new RuntimeException("API error: " + response.statusCode() + " " + response.body());
-        }
-
-        JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
-        return json.getAsJsonArray("content")
-                .get(0).getAsJsonObject()
-                .get("text").getAsString();
     }
 
     @SuppressWarnings("unchecked")
