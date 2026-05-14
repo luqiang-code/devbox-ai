@@ -18,6 +18,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
 
 @Command(
         name = "devbox",
@@ -94,12 +95,59 @@ public class App implements Callable<Integer> {
             Deployer deployer = new Deployer(ai, workDir);
             deployer.deploy(project);
         } else {
-            System.out.println(" Setup/Deploy requires AI provider for optimal results.");
-            System.out.println(" Run: cd .devbox/" + project.getName() + " && " + project.getRunCommand());
+            localSetupAndDeploy(project);
         }
 
         System.out.println(" Done! Project at: " + project.getLocalUrl());
         return 0;
+    }
+
+    private void localSetupAndDeploy(ProjectInfo project) throws Exception {
+        Path repoPath = Path.of(workDir, project.getName());
+
+        System.out.println(" Setting up " + project.getName() + " (local mode)");
+        for (String cmd : project.getSetupCommands()) {
+            System.out.println("  -> " + cmd);
+            ProcessBuilder pb = new ProcessBuilder("sh", "-c", cmd);
+            pb.directory(repoPath.toFile());
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            boolean ok = p.waitFor(300, TimeUnit.SECONDS);
+            if (!ok) {
+                System.out.println("  Timed out, continuing...");
+            }
+        }
+
+        if (!project.getEnvVars().isEmpty()) {
+            Path envPath = repoPath.resolve(".env");
+            if (!Files.exists(envPath)) {
+                StringBuilder sb = new StringBuilder();
+                for (String v : project.getEnvVars()) {
+                    sb.append(v).append("=changeme\n");
+                }
+                Files.writeString(envPath, sb.toString());
+                System.out.println("  Created .env with " + project.getEnvVars().size() + " variables to configure");
+            }
+        }
+
+        System.out.println(" Deploying " + project.getName() + "...");
+        String runCmd = project.getRunCommand();
+        System.out.println("  Run command: " + runCmd);
+
+        ProcessBuilder pb = new ProcessBuilder("sh", "-c", runCmd);
+        pb.directory(repoPath.toFile());
+        pb.redirectErrorStream(true);
+        Process process = pb.start();
+
+        Thread.sleep(3000);
+        if (process.isAlive()) {
+            System.out.println(" Project started (PID: " + process.pid() + ")");
+            System.out.println("  URL: " + project.getLocalUrl());
+        } else {
+            String output = new String(process.getInputStream().readAllBytes());
+            System.out.println(" Process exited immediately!");
+            System.out.println("  Output: " + output.substring(0, Math.min(500, output.length())));
+        }
     }
 
     private AiProvider resolveProvider(Properties env) {
